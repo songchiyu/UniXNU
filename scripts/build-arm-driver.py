@@ -2,6 +2,7 @@
 """Compile the generic platform expert against the actual source-kernel ABI."""
 import argparse
 import json
+import os
 import tomllib
 from pathlib import Path
 import struct
@@ -88,8 +89,17 @@ if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     if args.verified_root_bundle:
         command += ['-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
 if component == 'NativeUfs':
-    command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/VirtioMmioBlock'),
-                '-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1', '-mgeneral-regs-only']
+    # The block-device half subclasses IOBlockStorageDevice, which only the prelinked original
+    # IOStorageFamily provides, and publishing a root window requires an owner-signed volume policy
+    # (startRoot's validate() returns false without NATIVE_VERIFIED_BLOCK). A board without
+    # CONFIG_XNU_VERIFIED_ROOT_PROBE therefore cannot publish anything, so compile the probe-only
+    # subset: it keeps the transport and the native_ufs_log_* window and leaves the block half out.
+    command += ['-I', str(ROOT / 'drivers/VirtioMmioBlock'), '-mgeneral-regs-only']
+    if os.environ.get('XNU_VERIFIED_ROOT_PROBE') == '1':
+        command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'),
+                    '-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
+    else:
+        command += ['-DNATIVE_UFS_PROBE_ONLY=1']
 if component=='NativeOfflineGPU':
     command += ['-I',str(ROOT/'drivers/VirtioMmioConsole')]
 if component in ('NativeLegacyDisplay','NativeHidInput'):
