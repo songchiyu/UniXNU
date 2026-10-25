@@ -47,6 +47,13 @@ VINFO_VA = 0xFFFFFFF00C0A2970      # _vinfo
 PANIC_CAVE_END = 0xFFFFFFF00B9D0FF0
 CAVE_SIZE = 0x60
 CAVES = {1: 0xFFFFFFF00B9D0500, 2: 0xFFFFFFF00B9D0560, 3: 0xFFFFFFF00B9D05C0, 4: 0xFFFFFFF00B9D0620}
+# Stage 4 makes its call and then waits, which takes more than the shared 0x60 (it also carries the
+# branch back to the call site). It is the last cave, so it may use everything up to PANIC_CAVE_END
+# minus the 0x60 the panic screen would need; the panic screen itself is refused when the two would
+# overlap, in main(). The per-cave emptiness check uses the same size, so nothing is overwritten
+# unseen. This used to be 0x300 when stage 4 also painted; it no longer paints, so it is smaller.
+# Stages 5 and up exist only for the --ladder form, which needs one call-plus-wait cave per site.
+CAVE_SIZE_BY_STAGE = {4: 0x140, 5: 0x140, 6: 0x140, 7: 0x140, 8: 0x140, 9: 0x140}
 TIMEBASE = 19200000
 
 PAINT = """
@@ -67,6 +74,19 @@ PAINT = """
   b.hi 1b
   dsb sy
 """
+
+# After the MMU is on the frame buffer is reachable only through the physical map, and this site
+# cannot reach it: the board's frame buffer is *below* gPhysBase (DarwinBoot's window starts at the
+# top of DRAM; the panel sits in the low reserved range), so it falls outside the physical map that
+# physmap_base covers, and phystokv() panics with "illegal PA" instead of translating it. ml_io_map()
+# would work, but it needs kernel_map, which kmem_init() creates in kernel_bootstrap - long after
+# _arm_vm_init returns. Until a site past kernel_bootstrap is hooked, report here by timing alone:
+# the cave waits and resets, so a reset proves the call returned.
+#
+# KEEL: do not resurrect a store through physmap_base at this point. It faults on this board.
+# DarwinBoot's video base is 0x9C000000 while gPhysBase is about 0xC2E04000, so the panel is 0x24A
+# MiB below the aperture; phystokv() panics "illegal PA" and hangs the machine at this site.
+PAINT_PHYS = ""
 
 SOURCES = {
     1: ".text\n.global _start\n_start:\n" + PAINT.format(args='x0', band=1, lo='0x00FF', hi='0xFF00') + "  b target\n",
@@ -98,8 +118,9 @@ _start:
 .global _start
 _start:
   bl callee
-  mrs x1, cntpct_el0
   ldr x2, ={ticks}
+  cbz x2, 2f
+  mrs x1, cntpct_el0
   add x2, x1, x2
 1:
   isb
@@ -112,25 +133,40 @@ _start:
   mov x2, xzr
   mov x3, xzr
   smc #0
-2:
   wfe
-  b 2b
+  b .
+2:
+  b target
 """ + ".ltorg\n",
 }
 
+# Reset at the call site without making the call. The wait is what makes --ladder work: without it
+# every level resets at once and the only detectable outcome is "reached the first site". With it,
+# level n resets n seconds after the kernel arrives there, so the delay names the deepest site the
+# kernel reached. A zero delay keeps the old immediate-reset behavior for a single probe.
 RESET_BEFORE = """.text
 .global _start
 _start:
+  ldr x2, ={ticks}
+  cbz x2, 2f
+  mrs x1, cntpct_el0
+  add x2, x1, x2
+1:
+  isb
+  mrs x1, cntpct_el0
+  cmp x1, x2
+  b.lo 1b
+2:
   movz w0, #0x0009
   movk w0, #0x8400, lsl #16
   mov x1, xzr
   mov x2, xzr
   mov x3, xzr
   smc #0
-1:
+3:
   wfe
-  b 1b
-"""
+  b 3b
+""" + ".ltorg\n"
 
 
 def kernel_symbols(kernel):
@@ -151,6 +187,16 @@ def function_range(symbols, name):
         if symbol == name:
             return start, next(address for address in starts if address > start)
     raise SystemExit(f'No symbol {name} in the kernel')
+
+
+def find_entry(data, symbols, function):
+    """The first instruction of FUNCTION, for a probe that fires on entry.
+
+    _arm_init is reached by a tail jump: _start_first_cpu loads its address into LR and returns,
+    so there is no `bl _arm_init` anywhere to find. Hook the entry instead.
+    """
+    low, _ = function_range(symbols, function)
+    return low
 
 
 def find_call(data, symbols, function, name, occurrence):
@@ -368,8 +414,12 @@ def main():
     parser.add_argument('--no-reset', action='store_true', help='no reset probe at all')
     parser.add_argument('--occurrence', type=int, default=1, help='which call to SYMBOL (1 = first)')
     parser.add_argument('--in', dest='function', default='_arm_init', help='function that makes the call (default _arm_init)')
+    parser.add_argument('--ladder', metavar='SYMBOL[,SYMBOL...]',
+                        help='one reset probe per SYMBOL, in order, with --reset-delay N giving the '
+                             'Nth probe a delay of N seconds: the earliest site reached resets first, '
+                             'so a single boot reports how far the function got')
     args = parser.parse_args()
-    if args.reset_before and not args.reset_after:
+    if args.reset_before and not args.reset_after and not args.ladder:
         raise SystemExit('--reset-before requires --reset-after')
     data = bytearray(args.kernel.read_bytes())
     load_segments(data)
@@ -382,36 +432,89 @@ def main():
     for va, value in expected.items():
         if word(va) != value:
             raise SystemExit(f'{va:#x} holds {word(va):#010x}, expected {value:#010x}: not the kernel these probes are for')
-    for va in CAVES.values():
-        if any(data[file_offset(va):file_offset(va) + CAVE_SIZE]):
+    for stage, va in CAVES.items():
+        size = CAVE_SIZE_BY_STAGE.get(stage, CAVE_SIZE)
+        if any(data[file_offset(va):file_offset(va) + size]):
             raise SystemExit(f'Padding at {va:#x} is not empty')
 
     # (site, cave stage, symbols the cave is linked with)
     sites = [(ENTRY_VA, 1, {'target': START_FIRST_CPU}),
              (MMU_ENABLE_VA, 2, {'target': MMU_ENABLE_VA + 4})]
+    ladder = None
     if args.no_reset:
         description = 'no reset probe'
+    elif args.ladder:
+        # Sites from shallow to deep. Probe n gets a delay of n seconds, so the shallowest site the
+        # kernel actually reaches fires first and its delay says which site that was.
+        symbols = kernel_symbols(args.kernel)
+        names = [name.strip() for name in args.ladder.split(',') if name.strip()]
+        if not names:
+            raise SystemExit('--ladder needs at least one symbol')
+        ladder = []
+        for index, name in enumerate(names, 1):
+            stage = 4 + index - 1
+            if stage not in CAVES:
+                # Lay out the extra caves right after the last one in use, each as large as the
+                # cave before it. CAVE_SIZE_BY_STAGE holds a size per stage, not a cumulative
+                # offset, so the previous cave's own size is what advances the address.
+                previous = max(CAVES)
+                CAVES[stage] = CAVES[previous] + CAVE_SIZE_BY_STAGE.get(previous, CAVE_SIZE)
+                size = CAVE_SIZE_BY_STAGE.get(stage, CAVE_SIZE)
+                if CAVES[stage] + size > PANIC_CAVE_END:
+                    raise SystemExit(f'{len(names)} ladder probes need room up to '
+                                     f'{CAVES[stage] + size:#x}, past the padding end {PANIC_CAVE_END:#x}')
+                if any(data[file_offset(CAVES[stage]):file_offset(CAVES[stage]) + size]):
+                    raise SystemExit(f'Padding at {CAVES[stage]:#x} is not empty')
+            call_va, callee = find_call(data, symbols, args.function, name, 1)
+            ladder.append((call_va, stage, {'callee': callee, 'target': call_va + 4}, name))
+        sites.extend((site, stage, syms) for site, stage, syms, _ in ladder)
+        description = (f'stage 4 ladder of {len(names)} reset probes in {args.function}: '
+                       + ', '.join(f'{i}={n}@{s:#x}' for i, (s, _, _, n) in enumerate(ladder, 1)))
     elif args.reset_after:
         symbols = kernel_symbols(args.kernel)
-        call_va, callee = find_call(data, symbols, args.function, args.reset_after, args.occurrence)
-        sites.append((call_va, 4, {'callee': callee, 'target': call_va + 4}))
-        description = f'stage 4 reset {"before" if args.reset_before else "after"} call #{args.occurrence} to {args.reset_after} in {args.function} (at {call_va:#x})'
+        if args.reset_after == '@entry':
+            # Fire on entry to args.function itself. _arm_init is reached by a tail jump (its address
+            # goes into LR at _start_first_cpu), so there is no call to hook. This form must be used
+            # with --reset-before: the site's original first instruction is displaced and never
+            # re-executed, so falling through into the function would corrupt it.
+            if not args.reset_before:
+                raise SystemExit('--reset-after @entry needs --reset-before')
+            call_va = find_entry(data, symbols, args.function)
+            sites.append((call_va, 4, {}))
+            description = f'stage 4 reset on entry to {args.function} (at {call_va:#x})'
+        else:
+            call_va, callee = find_call(data, symbols, args.function, args.reset_after, args.occurrence)
+            # No frame buffer store here: the panel is outside the physical aperture at this site (see
+            # PAINT_PHYS). The cave makes the call, waits, then resets, so the timing is the answer.
+            sites.append((call_va, 4, {'callee': callee, 'target': call_va + 4}))
+            description = f'stage 4 {"reset" if args.reset_before or args.reset_delay else "bar"} after call #{args.occurrence} to {args.reset_after} in {args.function} (at {call_va:#x})'
     else:
         sites.append((AFTER_MMU_VA, 3, {'target': AFTER_MMU_VA + 4}))
         description = f'stage 3 reset {args.reset_delay} s after the MMU is on'
 
     with tempfile.TemporaryDirectory() as tmp:
         for site, stage, symbols in sites:
-            source = RESET_BEFORE if (stage == 4 and args.reset_before) else SOURCES[stage].format(ticks=TIMEBASE * args.reset_delay)
+            if ladder and stage >= 4:
+                # Level n waits n * --reset-delay. A one-second step is too close to the reset
+                # itself to time by hand, so the step is the configured delay.
+                seconds = (stage - 3) * args.reset_delay
+            else:
+                seconds = args.reset_delay
+            # Stages past 4 exist only for the ladder and have the same shape as stage 4.
+            template = 4 if stage > 4 else stage
+            shape = RESET_BEFORE if (stage >= 4 and args.reset_before) else SOURCES[template]
+            source = shape.format(ticks=TIMEBASE * seconds)
             code = assemble(source, CAVES[stage], symbols, Path(tmp))
-            if len(code) > CAVE_SIZE:
-                raise SystemExit(f'Stage {stage} code is too large')
+            limit = CAVE_SIZE_BY_STAGE.get(stage, CAVE_SIZE)
+            if len(code) > limit:
+                raise SystemExit(f'Stage {stage} code is {len(code):#x} bytes, its cave holds {limit:#x}')
             data[file_offset(CAVES[stage]):file_offset(CAVES[stage]) + len(code)] = code
     for site, stage, _ in sites:
         struct.pack_into('<I', data, file_offset(site), branch(site, CAVES[stage]))
     if args.panic_screen:
         # Right after the last probe cave in use, so the padding is shared as tightly as possible.
-        PANIC_CAVE = max(CAVES[stage] for _, stage, _ in sites) + CAVE_SIZE
+        last = max(sites, key=lambda entry: CAVES[entry[1]])[1]
+        PANIC_CAVE = CAVES[last] + CAVE_SIZE_BY_STAGE.get(last, CAVE_SIZE)
         if word(PANIC_VA) in (0, 0xFFFFFFFF) or any(data[file_offset(PANIC_CAVE):file_offset(PANIC_CAVE_END)]):
             raise SystemExit('panic() or the panic screen padding is not as expected')
         with tempfile.TemporaryDirectory() as tmp:

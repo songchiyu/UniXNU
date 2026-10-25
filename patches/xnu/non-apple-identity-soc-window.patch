@@ -1,0 +1,38 @@
+diff --git a/pexpert/arm/pe_identify_machine.c b/pexpert/arm/pe_identify_machine.c
+index 937ce42..acca264 100644
+--- a/pexpert/arm/pe_identify_machine.c
++++ b/pexpert/arm/pe_identify_machine.c
+@@ -22,6 +22,7 @@ extern void clean_mmu_dcache(void);
+ static char    *gPESoCDeviceType;
+ static char     gPESoCDeviceTypeBuffer[SOC_DEVICE_TYPE_BUFFER_SIZE];
+ static vm_offset_t gPESoCBasePhys;
++static boolean_t gPESoCNodePresent;
+ 
+ static uint32_t pe_arm_init_timer(void *args);
+ 
+@@ -42,7 +43,16 @@ pe_identify_machine(boot_args * bootArgs)
+ 
+ 	(void)bootArgs;
+ 
+-	if (pe_arm_get_soc_base_phys() == 0) {
++	/*
++	 * A zero base is Apple's "there is no arm-io node" value, and the early return
++	 * leaves gPEClockFrequencyInfo at zero. Non-Apple boards publish an identity
++	 * arm-io window (ranges = <0 0 size>), so the base is legitimately zero while
++	 * the node exists. Those boards keep absolute addresses in the children's reg
++	 * properties and add this base to them, so zero stays the right value.
++	 * Decide on the node's presence, not on the base.
++	 */
++	pe_arm_get_soc_base_phys();
++	if (!gPESoCNodePresent) {
+ 		return;
+ 	}
+ 
+@@ -168,6 +178,7 @@ pe_arm_get_soc_base_phys(void)
+ 	char const      *tmpStr;
+ 
+ 	if (SecureDTFindEntry("name", "arm-io", &entryP) == kSuccess) {
++		gPESoCNodePresent = TRUE;
+ 		if (gPESoCDeviceType == 0) {
+ 			SecureDTGetProperty(entryP, "device_type", (void const **)&tmpStr, &prop_size);
+ 			strlcpy(gPESoCDeviceTypeBuffer, tmpStr, SOC_DEVICE_TYPE_BUFFER_SIZE);

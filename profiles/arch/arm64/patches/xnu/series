@@ -27,6 +27,7 @@
 ../../../../../patches/xnu/native-work-interval-soft-fail.patch
 ../../../../../patches/xnu/native-work-interval-trace.patch
 ../../../../../patches/xnu/non-apple-cache-monitor.patch
+../../../../../patches/xnu/non-apple-identity-soc-window.patch
 ../../../../../patches/xnu/non-apple-iommu-bootstrap.patch
 ../../../../../patches/xnu/non-apple-pmap-field.patch
 ../../../../../patches/xnu/null-root-media.patch

@@ -128,11 +128,24 @@ def build(ctx, kernel=None):
     payloads.mkdir(parents=True)
     shutil.copyfile(kernel, payloads / 'kernel.macho')
     # The entry probe (stage bars, optional reset) is wanted with either setting; the panic screen is only one part of it.
-    if spec.get('panic_screen') or spec.get('entry_probe_reset_delay'):
-        probe = (['--reset-delay', str(int(spec['entry_probe_reset_delay']))]
-                 if spec.get('entry_probe_reset_delay') else ['--no-reset'])
+    # entry_probe_reset_delay = 0 asks for the bar alone: the stage 4 cave paints and returns without
+    # waiting or resetting, so the board keeps running and the next stage can be marked as well.
+    delay = spec.get('entry_probe_reset_delay')
+    # entry_probe_bars_only asks for the stage 1 and stage 2 bars and nothing else, as a control for
+    # the reset probes: it answers "does this kernel reset on its own, and when" without a probe that
+    # could be the thing resetting it.
+    bars_only = bool(spec.get('entry_probe_bars_only'))
+    if spec.get('panic_screen') or delay is not None or bars_only:
+        probe = ['--reset-delay', str(int(delay))] if delay is not None and not bars_only else ['--no-reset']
         screen = ['--panic-screen'] if spec.get('panic_screen') else []
-        if spec.get('entry_probe_reset_delay') and spec.get('entry_probe_reset_after'):
+        if spec.get('entry_probe_reset_ladder'):
+            # One reset probe per symbol in the given order, with delays 1,2,3...: the shallowest
+            # site the kernel reaches resets first, so one boot reports how far it got.
+            probe += ['--ladder', ','.join(spec['entry_probe_reset_ladder']),
+                      '--in', spec.get('entry_probe_reset_in', '_arm_init')]
+            if spec.get('entry_probe_reset_before'):
+                probe.append('--reset-before')
+        elif spec.get('entry_probe_reset_after'):
             # Stage 4 in place of stage 3: reset after the Nth call to SYMBOL in FUNCTION.
             probe += ['--reset-after', spec['entry_probe_reset_after'], '--in', spec.get('entry_probe_reset_in', '_arm_init'),
                       '--occurrence', str(int(spec.get('entry_probe_reset_occurrence', 1)))]
