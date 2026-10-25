@@ -1,3 +1,8 @@
+# zzz-boot-progress.patch places a stage marker inside the XNU_SHENG_PMGR block
+# that sheng-platform-power.patch adds to bsd_init.c. Git applies hunks by
+# context, so that block must exist first; the patch guards itself with
+# #if XNU_SHENG_PMGR and is inert on boards that leave the flag off.
+arch:../../../patches/xnu/sheng-platform-power.patch
 arch:../../../patches/xnu/zzz-boot-progress.patch
 component:XnuPrelink/patches/xnu-10063.141.1-security-init.patch
 component:XnuPrelink/patches/xnu-10063.141.1-sparse-index.patch
