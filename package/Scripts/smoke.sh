@@ -70,7 +70,7 @@ python3 "$ROOT/Scripts/qemu-run.py" "$SMOKE/esp-bare" --no-gop --timeout 40 \
   --expect 'UNIXNU: config: none found, using built-in configuration' \
   --expect 'UNIXNU: config: no boot entry found' \
   --expect 'UNIXNU: ui: text console' \
-  --expect "UNIXNU: menu: shown 3 entries, default 0 'exit'" \
+  --expect "UNIXNU: menu: shown 4 entries, default 0 'exit'" \
   --expect 'UNIXNU: menu: timeout, booting default 0' \
   --expect 'UNIXNU: action: exit' \
   --reject 'ASSERT'

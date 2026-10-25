@@ -48,6 +48,23 @@ def find_firmware(code):
     sys.exit("error: no AAVMF firmware found; pass --firmware")
 
 
+def virtio_gpu():
+    """The virtio GPU device name this QEMU ships.
+
+    QEMU 10 dropped the "virtio-gpu-pci" alias and lists only "virtio-gpu-device";
+    older releases list both. Take the first name the binary actually knows.
+    """
+    try:
+        listing = subprocess.run([shutil.which("qemu-system-aarch64") or "qemu-system-aarch64", "-device", "help"],
+                                 capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        listing = ""
+    for name in ("virtio-gpu-pci", "virtio-gpu-device"):
+        if f'name "{name}"' in listing:
+            return name
+    return "virtio-gpu-pci"
+
+
 class Qmp:
     def __init__(self, path, timeout=10.0):
         deadline = time.time() + timeout
@@ -154,6 +171,9 @@ def main() -> int:
     if vars_template:
         vars_copy = work / "vars.fd"
         shutil.copy(vars_template, vars_copy)
+        # Templates in a read-only store (nix) are mode 444 and copy preserves that, but QEMU writes the
+        # variable store while it runs.
+        vars_copy.chmod(0o644)
         cmd += ["-drive", f"if=pflash,format=raw,file={vars_copy}"]
     cmd += [
         "-drive", f"if=none,id=esp,format=raw,readonly=on,file=fat:{args.esp.resolve()}",
@@ -165,7 +185,7 @@ def main() -> int:
             "-device", f"virtio-blk-pci,drive=disk{index}",
         ]
     if display:
-        cmd += ["-device", f"virtio-gpu-pci,xres={display[0]},yres={display[1]}"]
+        cmd += ["-device", f"{virtio_gpu()},xres={display[0]},yres={display[1]}"]
     elif not args.no_gop:
         cmd += ["-device", "ramfb"]
     cmd += [
