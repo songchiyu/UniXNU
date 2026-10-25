@@ -202,8 +202,13 @@ def assemble_c(source, va, workdir, symbols):
         if not any(base <= text and text + 256 <= base + size for base, size, _, _ in SEGMENTS):
             raise SystemExit('Invalid _boot_progress_panic_text')
         definitions.append(f'-DPANIC_TEXT={text:#x}UL')
+    # -fomit-frame-pointer: this code runs on the panic path with no debugger unwind, and some
+    # clang builds keep a frame pointer even in a noreturn loop (park()), which overran the
+    # cave by a few bytes on Linux clang 21.1.8 but not on Apple clang 21.0.0. Dropping it keeps
+    # the size the same on every host.
     subprocess.run([clang, '--target=aarch64-none-elf', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
-                    '-mgeneral-regs-only', '-fno-pic', '-mcmodel=tiny', '-Oz', f'-DVINFO={VINFO_VA:#x}UL',
+                    '-mgeneral-regs-only', '-fno-pic', '-mcmodel=tiny', '-Oz', '-fomit-frame-pointer',
+                    f'-DVINFO={VINFO_VA:#x}UL',
                     *definitions, f'-I{font_dir}', '-c', source, '-o', obj], check=True)
     script = workdir / 'panic.ld'
     script.write_text('SECTIONS { . = %#x; .text : { *(.text.a_entry) *(.text.a_common) *(.text*) *(.rodata*) } /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.ARM.*) } }\n' % va)
