@@ -99,6 +99,13 @@ jobs:
           repository: ${{ inputs.device_repository }}
           ref: ${{ inputs.device_ref }}
           path: device
+      - name: Check out Mu-Silicium (uefi-alioth)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: FFT-infra/uefi-alioth
+          ref: main
+          path: uefi-alioth
+          fetch-depth: 1
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -211,6 +218,7 @@ jobs:
       - name: Build kernel
         id: kernel
         env:
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-alioth
           # prepare-xnu-source.py lists Apple sources through the GitHub API; anonymous calls from hosted runners hit
           # the shared rate limit (HTTP 403).
           GITHUB_TOKEN: ${{ github.token }}
