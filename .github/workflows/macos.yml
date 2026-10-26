@@ -209,6 +209,12 @@ jobs:
         run: bash -euo pipefail -c "$PRE_BUILD"
 
       - name: Build kernel
+        id: kernel
+        env:
+          # prepare-xnu-source.py lists Apple sources through the GitHub API; anonymous calls from hosted runners hit
+          # the shared rate limit (HTTP 403).
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu build kernel
       - name: Build the alioth touch kit (compile check)
         # The device repository's alioth-touch kit is compiled with the kernel's own flags right
         # after the kernel build; the archive itself is merged by the port's full build.
@@ -218,12 +224,6 @@ jobs:
             git clone --depth 1 https://github.com/UniXNU/QcomGeniSpi.git drivers/QcomGeniSpi
             python3 "$UNIXNU_DEVICE/scripts/build-alioth-touch.py"
           fi
-        id: kernel
-        env:
-          # prepare-xnu-source.py lists Apple sources through the GitHub API; anonymous calls from hosted runners hit
-          # the shared rate limit (HTTP 403).
-          GITHUB_TOKEN: ${{ github.token }}
-        run: ./unixnu build kernel
 
       - name: Build userdata
         id: userdata
